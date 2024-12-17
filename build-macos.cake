@@ -28,6 +28,9 @@ var netCoreProject = new {
 var certIsSet = !string.IsNullOrEmpty(EnvironmentVariable("P12_BASE64"));
 var certNameIsSet = !string.IsNullOrEmpty(EnvironmentVariable("APPLE_CERT_NAME"));
 
+var keychainPath = "app-signing.keychain-db";
+var keychainPassword = Guid.NewGuid().ToString("N");
+
  Task("Clean")
  .Does(()=>{
      CleanDirectories(buildDirs);
@@ -106,30 +109,97 @@ Task("Install-Certificate")
     Information("Decoding the P12 certificate from base64...");
 
     var p12Bytes = Convert.FromBase64String(p12Base64);
-
     var tempP12File = "./certificate.p12";
-    System.IO.File.WriteAllBytes(tempP12File, p12Bytes);
 
-    Information("Importing P12 certificate into the keychain...");
-
-    var importArguments = new ProcessArgumentBuilder()
-        .Append("import")
-        .AppendQuoted(tempP12File)
-        .Append("-k")
-        .AppendQuoted("/Library/Keychains/System.keychain")
-        .Append("-P")
-        .AppendQuoted(p12Password);
-
-    RunToolWithOutput("security", new ProcessSettings
+    try
     {
-        Arguments = importArguments.RenderSafe()
-    });
+        System.IO.File.WriteAllBytes(tempP12File, p12Bytes);
 
-    Information("Successfully imported the certificate.");
+        Information("Creating temporary keychain...");
+        RunToolWithOutput("security", new ProcessSettings
+        {
+            Arguments = new ProcessArgumentBuilder()
+                .Append("create-keychain")
+                .Append("-p")
+                .AppendQuoted(keychainPassword)
+                .AppendQuoted(keychainPath)
+        });
 
-    System.IO.File.Delete(tempP12File);
+        RunToolWithOutput("security", new ProcessSettings
+        {
+            Arguments = new ProcessArgumentBuilder()
+                .Append("set-keychain-settings")
+                .Append("-lut")
+                .Append("21600")
+                .AppendQuoted(keychainPath)
+        });
 
-    Information("Temporary P12 certificate file deleted.");
+        RunToolWithOutput("security", new ProcessSettings
+        {
+            Arguments = new ProcessArgumentBuilder()
+                .Append("unlock-keychain")
+                .Append("-p")
+                .AppendQuoted(keychainPassword)
+                .AppendQuoted(keychainPath)
+        });
+
+        Information("Importing certificate to keychain...");
+        RunToolWithOutput("security", new ProcessSettings
+        {
+            Arguments = new ProcessArgumentBuilder()
+                .Append("import")
+                .AppendQuoted(tempP12File)
+                .Append("-P")
+                .AppendQuoted(p12Password)
+                .Append("-t")
+                .Append("cert")
+                // -A allows access for this cert for any app on the machine
+                // But -T only limits it to specific apps (codesign and security here)
+                // That's what Apple does for GitHub Actions:
+                // https://github.com/Apple-Actions/import-codesign-certs/blob/63fff01cd422d4b7b855d40ca1e9d34d2de9427d/src/security.ts#L109-L113
+                .Append("-A")
+                .Append("-T")
+                .Append("/usr/bin/codesign")
+                .Append("-T")
+                .Append("/usr/bin/security")
+                .Append("-f")
+                .Append("pkcs12")
+                .Append("-k")
+                .AppendQuoted(keychainPath)
+        });
+
+        Information("Set keychain partition");
+        RunToolWithOutput("security", new ProcessSettings
+        {
+            Arguments = new ProcessArgumentBuilder()
+                .Append("set-key-partition-list")
+                .Append("-S")
+                .Append("apple-tool:,apple:")
+                .Append("-k")
+                .AppendQuoted(keychainPassword)
+                .AppendQuoted(keychainPath)
+        });
+
+        Information("Update keychains visibility");
+        RunToolWithOutput("security", new ProcessSettings
+        {
+            Arguments = new ProcessArgumentBuilder()
+                .Append("list-keychains")
+                .Append("-d")
+                .Append("user")
+                .Append("-s")
+                .AppendQuoted(keychainPath)
+                .Append("login.keychain")
+        });
+
+        Information("Successfully imported the certificate.");
+    }
+    finally
+    {
+        System.IO.File.Delete(tempP12File);
+
+        Information("Temporary P12 certificate file deleted.");
+    }
 });
 
  Task("Create-Bundle")
@@ -251,9 +321,22 @@ Task("Compress-Bundle")
     }
 });
 
+Task("Cleanup-After-Sign")
+    .IsDependentOn("Sign-Bundle")
+    .Does(() =>
+{
+    RunToolWithOutput("security", new ProcessSettings
+    {
+        Arguments = new ProcessArgumentBuilder()
+            .Append("delete-keychain")
+            .AppendQuoted(keychainPath)
+    });
+});
+
 Task("Package-Mac")
     .IsDependentOn("Create-Bundle")
     .IsDependentOn("Sign-Bundle")
+    .IsDependentOn("Cleanup-After-Sign")
     .IsDependentOn("Compress-Bundle");
 
  Task("Default")
@@ -264,22 +347,31 @@ Task("Package-Mac")
  RunTarget(target);
 
 
-void RunToolWithOutput(string toolName, ProcessSettings settings)
+void RunToolWithOutput(
+    string toolName, ProcessSettings settings,
+    bool includeStandardOutput = false,
+    bool includeStandardError = true)
 {
-    settings.RedirectStandardError = true;
-    settings.RedirectStandardOutput = true;
-    settings.RedirectedStandardErrorHandler = line =>
+    settings.RedirectStandardOutput = includeStandardOutput;
+    if (includeStandardOutput)
     {
-        if (line is not null)
-            Error(line);
-        return line;
-    };
-    settings.RedirectedStandardOutputHandler = line =>
+        settings.RedirectedStandardOutputHandler = line =>
+        {
+            if (line is not null)
+                Information(line);
+            return line;
+        };
+    }
+    settings.RedirectStandardError = includeStandardError;
+    if (includeStandardError)
     {
-        if (line is not null)
-            Information(line);
-        return line;
-    };
+        settings.RedirectedStandardErrorHandler = line =>
+        {
+            if (line is not null)
+                Error(line);
+            return line;
+        };
+    }
     var exitCode = StartProcess(toolName, settings, out var lines);
     if (exitCode != 0)
     {
