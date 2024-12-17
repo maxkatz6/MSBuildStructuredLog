@@ -27,9 +27,9 @@ for:
       P12_PASSWORD:
         secure: 2Sv8k0KiFzXcnzl+mmIfvQ==
       APPLE_TEAM_ID:
-        secure: AnEDLgBUDM9+UAdcIOrMLQ==
+        secure: hPtwTQszJt9PNKRKqOZf9w==
       APPLE_CERT_NAME:
-        secure: XiHIzjXfVB91xh+JHWUwatVVSmfbf2S7zZRxmfx9t5Q=
+        secure: XiHIzjXfVB91xh+JHWUwar+CUvmsLTdcExjfn7fTK6mM3UXwAplIASg0KgZntW/ryUsKOLB8nfmRHfUDJO6yWA==
     init:
       - curl -sSL https://dot.net/v1/dotnet-install.sh | /bin/bash -s -- --channel 8.0
     build_script:

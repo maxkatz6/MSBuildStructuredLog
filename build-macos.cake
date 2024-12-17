@@ -28,7 +28,7 @@ var netCoreProject = new {
 var certIsSet = !string.IsNullOrEmpty(EnvironmentVariable("P12_BASE64"));
 var certNameIsSet = !string.IsNullOrEmpty(EnvironmentVariable("APPLE_CERT_NAME"));
 
-var keychainPath = "app-signing.keychain-db";
+var keychainPath = "app-signing.keychain";
 var keychainPassword = Guid.NewGuid().ToString("N");
 
  Task("Clean")
