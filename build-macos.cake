@@ -25,6 +25,9 @@ var netCoreProject = new {
     };
 
 
+var certIsSet = !string.IsNullOrEmpty(EnvironmentVariable("P12_BASE64"));
+var certNameIsSet = !string.IsNullOrEmpty(EnvironmentVariable("APPLE_CERT_NAME"));
+
  Task("Clean")
  .Does(()=>{
      CleanDirectories(buildDirs);
@@ -82,7 +85,7 @@ var netCoreProject = new {
  });
 
 Task("Install-Certificate")
-    .WithCriteria(HasEnvironmentVariable("P12_BASE64"))
+    .WithCriteria(certIsSet)
     .Does(() =>
 {
     var p12Base64 = EnvironmentVariable("P12_BASE64")?.Replace("\r", "").Replace("\n", "");
@@ -117,11 +120,9 @@ Task("Install-Certificate")
         .Append("-P")
         .AppendQuoted(p12Password);
 
-    StartProcess("security", new ProcessSettings
+    RunToolWithOutput("security", new ProcessSettings
     {
-        Arguments = importArguments.RenderSafe(),
-        RedirectStandardOutput = true,
-        RedirectStandardError = true
+        Arguments = importArguments.RenderSafe()
     });
 
     Information("Successfully imported the certificate.");
@@ -168,7 +169,7 @@ Task("Install-Certificate")
  });
 
  Task("Sign-Bundle")
-    .WithCriteria(HasEnvironmentVariable("APPLE_CERT_NAME"))
+    .WithCriteria(certNameIsSet)
     .IsDependentOn("Install-Certificate")
     .IsDependentOn("Create-Bundle")
     .Does(() =>
@@ -194,11 +195,9 @@ Task("Install-Certificate")
             args.AppendQuoted(signingIdentity);
             args.AppendQuoted(dylib.ToString());
 
-            RunCodeSign(new ProcessSettings
+            RunToolWithOutput("codesign", new ProcessSettings
             {
-                Arguments = args.RenderSafe(),
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
+                Arguments = args.RenderSafe()
             });
         }
 
@@ -216,21 +215,10 @@ Task("Install-Certificate")
             args.AppendQuoted(signingIdentity);
             args.AppendQuoted(appBundlePath.ToString());
 
-            RunCodeSign(new ProcessSettings
+            RunToolWithOutput("codesign",new ProcessSettings
             {
-                Arguments = args.RenderSafe(),
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
+                Arguments = args.RenderSafe()
             });
-        }
-
-        void RunCodeSign(ProcessSettings settings)
-        {
-            var exitCode = StartProcess("codesign", settings);
-            if (exitCode != 0)
-            {
-                throw new Exception($"The tool exited with code {exitCode}");
-            }
         }
     }
 });
@@ -256,11 +244,9 @@ Task("Compress-Bundle")
 
         // "Ditto" is absolutely necessary instead of "zip" command.
         // Otherwise no symlinks are saved, and notarize process would fail.
-        StartProcess("ditto", new ProcessSettings
+        RunToolWithOutput("ditto", new ProcessSettings
         {
-            Arguments = args.RenderSafe(),
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
+            Arguments = args.RenderSafe()
         });
     }
 });
@@ -276,3 +262,27 @@ Task("Package-Mac")
      .IsDependentOn("Package-Mac");
 
  RunTarget(target);
+
+
+void RunToolWithOutput(string toolName, ProcessSettings settings)
+{
+    settings.RedirectStandardError = true;
+    settings.RedirectStandardOutput = true;
+    settings.RedirectedStandardErrorHandler = line =>
+    {
+        if (line is not null)
+            Error(line);
+        return line;
+    };
+    settings.RedirectedStandardOutputHandler = line =>
+    {
+        if (line is not null)
+            Information(line);
+        return line;
+    };
+    var exitCode = StartProcess(toolName, settings, out var lines);
+    if (exitCode != 0)
+    {
+        throw new Exception($"The tool exited with code {exitCode}");
+    }
+}
